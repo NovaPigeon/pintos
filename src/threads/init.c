@@ -133,14 +133,59 @@ pintos_init (void)
     /* Run actions specified on kernel command line. */
     run_actions (argv);
   } else {
-    // TODO: no command line passed to kernel. Run interactively 
+    // TODO: no command line passed to kernel. Run interactively
+    const size_t buffer_size=80;
+    const char DEL=127;
+    char *buffer=(char* )malloc(buffer_size);
+    while(true)
+    {
+        printf("PKUOS> ");
+        memset(buffer,'\0',buffer_size);
+        size_t cmd_cnt=0;
+        while(true)
+        {
+          char c=input_getc();
+          if(cmd_cnt>=buffer_size)
+            continue;
+          /* enter */
+          if(c=='\r')
+          {
+            /* 回车不等于换行，需要 \r\n */
+            printf("\r\n");
+            break;
+          }
+          /* backspace */
+          if(c==DEL)
+          {
+            /* 退一格，打印空格（覆盖原来的字符，进一格），再退一格，以实现删除一格的效果*/
+            printf("\b \b");
+            cmd_cnt--;
+            buffer[cmd_cnt]='\0';
+          }
+          /* printable character */
+          if(c>31 && c<127)
+          {
+            /* 可打印字符 */
+            buffer[cmd_cnt++]=c;
+            printf("%c",c);
+          }
+        }
+        if(!strcmp(buffer,"whoami"))
+          printf("2100012945\n");
+        else if(!strcmp(buffer,"exit"))
+          break;
+        else
+          printf("invalid command.\n");
+    }
+    free(buffer);
+    printf("kernel shell terminated.\n");
   }
 
   /* Finish up. */
-  shutdown ();
-  thread_exit ();
+            shutdown();
+            thread_exit();
 }
-
+
 /** Clear the "BSS", a segment that should be initialized to
    zeros.  It isn't actually stored on disk or zeroed by the
    kernel loader, so we have to zero it ourselves.
