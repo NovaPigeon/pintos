@@ -18,6 +18,10 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+/* 规定可以传入的参数的最大数量 */
+#define MAX_ARG_NUM 128
+#define DEBUG_USER_PROG
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -28,20 +32,38 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
-  char *fn_copy;
+
+  /* 由于 strtok_r 会改变传入的字符串本身，所以需要额外的拷贝 */
+  char *fn_copy_0,*fn_copy_1;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
-     Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+     Otherwise there's a race between the caller and load(). 
+     通过深拷贝来避免竞争。
+     */
+  fn_copy_0 = palloc_get_page (0);
+  fn_copy_1 = palloc_get_page (0);
+  
+  if (fn_copy_0 == NULL || fn_copy_1==NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  
+  /* 参数的大小应被限制在一页的范畴内 */
+  strlcpy (fn_copy_0, file_name, PGSIZE);
+  strlcpy (fn_copy_1, file_name, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* 取出命令本身，在此过程中，fn_copy_0 被修改，故弃用 */
+  char* save_ptr;
+  char* cmd=strtok_r(fn_copy_0," ",&save_ptr);
+  /* Create a new thread to execute cmd. Also pass arguments */
+  /* 因为传的是指针，而主线程和子线程是并发的，所以子线程与主线程中对fn的操作会导致竞争，
+     事实上，thread_create 的第一个参数与 start_process 无关，它仅起到给线程命名的作用，
+     故不会产生竞争，我们只要关注最后一个参数，它才是传给 start_process 的参数 */
+  tid = thread_create (cmd, PRI_DEFAULT, start_process, fn_copy_1);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+  {
+    palloc_free_page (fn_copy_0); 
+    palloc_free_page (fn_copy_1);
+  }
   return tid;
 }
 
@@ -51,6 +73,15 @@ static void
 start_process (void *file_name_)
 {
   char *file_name = file_name_;
+  /* Prepare for strtok_r() */
+  char *cmd,*save_ptr;
+  
+  /* 此处的拷贝不是为了防止竞争，因为传入的参数本身就已经是拷贝，
+     而是为了方便分别处理命令和参数 */
+  char *fn_copy;
+  fn_copy=palloc_get_page(0);
+  strlcpy(fn_copy,file_name,PGSIZE);
+  
   struct intr_frame if_;
   bool success;
 
@@ -59,10 +90,18 @@ start_process (void *file_name_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+
+  /* 之后file_name被丢弃，改为使用 fn_copy */
+  cmd = strtok_r(file_name," ",&save_ptr);
+  /* 此处不需要传入参数 */
+  success = load (cmd, &if_.eip, &if_.esp);
+
+  if(success)
+    process_pass_args(&if_.esp,fn_copy);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
+  palloc_free_page (fn_copy);
   if (!success) 
     thread_exit ();
 
@@ -74,6 +113,95 @@ start_process (void *file_name_)
      and jump to it. */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
+}
+
+/** 传递参数
+ * 
+ * 首先，应先将栈指针 esp 初始化为 user-virtual-memory 的最高点，即 PHYS_BASE(0xc0000000)
+ * 
+ * 接下来以 command_line = /bin/ls -l foo bar 为例：
+ * 1. 将 command_line 拆分为: /bin/ls, -l, foo, bar.
+ * 2. 将这些参数本身放在栈顶。（此时不考虑对齐）
+ * 3. 然后填充 word_align ，使 esp 为 4 的倍数
+ * 4. 先推入 argv[4]=NULL，作为哨兵指针，然后按从右到左的次序，将各参数在栈顶的地址推入栈中。
+ * 5. 将 argv[0] 的地址和 argc 推入栈中。
+ * 6. 最后，将一个虚假的返回地址推入栈中，尽管 entry function 永远不会返回，但它应该与其他
+ * 函数调用一样拥有相同的结构。
+ * 
+ * 操作完成后，栈应该有以下的结构：
+ * | Address    | Name           | Data       | Type          |
+ * | ---------- | -------------- | ---------- | ------------- |
+ * | 0xbffffffc | `argv[3][...]` | bar\0      | `char[4]`     |
+ * | 0xbffffff8 | `argv[2][...]` | foo\0      | `char[4]`     |
+ * | 0xbffffff5 | `argv[1][...]` | -l\0       | `char[3]`     |
+ * | 0xbfffffed | `argv[0][...]` | /bin/ls\0  | `char[8]`     |
+ * | 0xbfffffec | word-align     | 0          | `uint8_t`     |
+ * | 0xbfffffe8 | `argv[4]`      | 0          | `char *`      |
+ * | 0xbfffffe4 | `argv[3]`      | 0xbffffffc | `char *`      |
+ * | 0xbfffffe0 | `argv[2]`      | 0xbffffff8 | `char *`      |
+ * | 0xbfffffdc | `argv[1]`      | 0xbffffff5 | `char *`      |
+ * | 0xbfffffd8 | `argv[0]`      | 0xbfffffed | `char *`      |
+ * | 0xbfffffd4 | `argv`         | 0xbfffffd8 | `char **`     |
+ * | 0xbfffffd0 | `argc`         | 4          | `int`         |
+ * | 0xbfffffcc | return address | 0          | `void (*) ()` |
+ */
+void 
+process_pass_args(void **esp, void *command_line)
+{
+  
+  command_line=(char*)command_line;
+  int argc=0;
+  void* argv[MAX_ARG_NUM];
+  
+  /* 0. 初始化 esp */
+  *esp=PHYS_BASE;
+  
+
+  /* 1. 将 command_line 拆分。
+   * 2. 将这些参数本身放在栈顶。（此时不考虑对齐） */
+  char *token,*save_ptr;
+  for(token=strtok_r(command_line," ",&save_ptr);
+      token != NULL;
+      token=strtok_r(NULL," ",&save_ptr))
+  {
+      /* 需要在每个参数后加上 '\0' */
+      size_t arg_len=strlen(token)+1;
+      *esp-=arg_len;
+      memcpy(*esp,token,arg_len);
+      /* 将各参数的地址记录下来 */
+      argv[argc++]=*esp;
+  }
+  /* 推入空指针 */
+  argv[argc]=0;
+
+  /* 3. 对齐 */
+  uintptr_t esp_tmp=(uintptr_t)*esp;
+  *esp=(void*)(esp_tmp-esp_tmp%4);
+
+  size_t ptr_size=4;
+  /* 5. 按从右到左的次序，推入各参数的地址 */
+  for(int i=argc;i>=0;--i)
+  {
+    *esp-=ptr_size;
+    *(int *)*esp=(int)argv[i];
+  }
+  /* 6. 推入 argv[0] 的地址和 argc */
+  *esp-=ptr_size;
+  *(int *)*esp=(int)*esp+ptr_size;
+  *esp-=ptr_size;
+  *(int *)*esp=argc;
+
+  /* 7. 推入虚假的返回地址 */
+  *esp-=ptr_size;
+  *(int *)*esp=0;
+
+#ifdef DEBUG_USER_PROG
+  printf("PASS ARGS:\nESP: %p\n",*esp);
+  hex_dump((uintptr_t)*esp,*esp,100,true);
+#endif
+
+
+
 }
 
 /** Waits for thread TID to die and returns its exit status.  If

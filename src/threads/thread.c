@@ -18,6 +18,8 @@
 /* mlfqs */
 fixed_point_t load_avg;
 
+bool schedule_start=false;
+
 /** Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
@@ -125,6 +127,9 @@ thread_start (void)
   thread_create ("idle", PRI_MIN, idle, &idle_started);
   /* 初始化 load_avg */
   load_avg=INT_TO_FP(0);
+
+  /* 初始化，标记线程调度可被应用，以免在未初始化时盲目调用 thread_yield() */
+  schedule_start=true;
 
   /* Start preemptive thread scheduling. */
   intr_enable ();
@@ -351,6 +356,9 @@ thread_exit (void)
 void
 thread_yield (void) 
 {
+  if(schedule_start==false)
+    return;
+
   struct thread *cur = thread_current ();
   enum intr_level old_level;
   
@@ -439,7 +447,7 @@ thread_set_nice (int nice UNUSED)
   else thread_current()->nice=nice;
 
   mlfqs_priority_update(thread_current(),NULL);
-  
+
   thread_yield();
 }
 

@@ -1,0 +1,17 @@
+1. 先检查要请求的锁是否被其他线程所持有，
+1. Check the lock we acquire whether held by other thread.(lock->holder?)If so, go on, else just go to the 
+2. Set current thread's struct member wait_lock as this lock, prepare for the nest donation.
+3. Update the lock's struct member donate_priority, which means the max priority the threads waiting for it have. Then, sort the lock's holder's hold_locks list, which make sure it is in descending donate_priority order.
+4. Single donation. If current thread's priority greater than the lock's holder's priority, donate to the holder thread. Set holder thread's priority to current thread's priority. And the prev_priority, don't change it, it would record the thread's priority before donation.
+5. Nested donation. If H is waiting on a lock that M holds and M is waiting on a lock that L holds, then both M and L should be boosted to H's priority. So we should search the waiting threads chain in depth of NEST_PRI_DONATE_DEPTH( I set it to 8). If the threads' priority in the chain is decreasing, we do donate behavior, in which the waiting thread donate to the holder thread, until the priority of the thread rises or we reach the max depth.
+
+1. Because the current thread no longer wait for a thread. So set current thread's  wait_lock to NULL.
+2. Update the lock's donate_priority, set it to current thread's priority.
+3. Insert the lock into the thread's hold_locks list in the descending donate_priority order.
+4. Set the lock's holder to current thread.
+
+1. Remove the lock from holder's hold_locks list.
+2. Set the lock's donate_priority to PRI_MIN.(If the lock be free, we should sure it could be held by any thread).
+3. Restore the priority of the current thread. We set it to the maximum of the prev_priority and the max donate_priority of locks in the hold_locks(just pop the front element due to the list's descending order). Because If the thread hold many locks, we shouldn't only restore the priority to prev_priority. Actually we should focus on the situation that multiple threads donate do one thread.
+4. Set the holder of the lock to NULL.
+5. 
