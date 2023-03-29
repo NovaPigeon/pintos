@@ -3,7 +3,10 @@
 
 #include <debug.h>
 #include <list.h>
+#include "lib/kernel/list.h"
 #include <stdint.h>
+#include <devices/timer.h>
+#include "fixed-point.h"
 
 /** States in a thread's life cycle. */
 enum thread_status
@@ -23,6 +26,10 @@ typedef int tid_t;
 #define PRI_MIN 0                       /**< Lowest priority. */
 #define PRI_DEFAULT 31                  /**< Default priority. */
 #define PRI_MAX 63                      /**< Highest priority. */
+
+#define NICE_MAX 20
+#define NICE_MIN -20
+#define NICE_DEFAULT 0
 
 /** A kernel thread or user process.
 
@@ -88,10 +95,21 @@ struct thread
     char name[16];                      /**< Name (for debugging purposes). */
     uint8_t *stack;                     /**< Saved stack pointer. */
     int priority;                       /**< Priority. */
+    int prev_priority;                  /**< 用于保存线程受捐献之前的优先级，在释放锁之后恢复. */
     struct list_elem allelem;           /**< List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /**< List element. */
+
+    struct lock *wait_lock;             /**< 当前线程正在等待的 lock. */
+    struct list hold_locks;             /**< 当前线程持有的锁的列表，按锁的捐献优先级有序排列. */
+
+    /* mlfqs */
+    int nice;
+    fixed_point_t recent_cpu;
+    
+
+
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -137,5 +155,13 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+/* 比较函数，用于对 ready_list 降序排序 */
+bool thread_priority_cmp(const struct list_elem *a,
+                         const struct list_elem *b,
+                         void *aux);
+void update_ready_list(void);
+void print_ready_list(void);
+
 
 #endif /**< threads/thread.h */

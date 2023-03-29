@@ -15,6 +15,9 @@
 #include "userprog/process.h"
 #endif
 
+/* mlfqs */
+fixed_point_t load_avg;
+
 /** Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
@@ -71,6 +74,17 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+/** mlfqs */
+
+/* 更新单一线程的优先级*/
+static void mlfqs_priority_update(struct thread* t,void* aux UNUSED);
+/* 更新单一线程的 recent_cpu */
+static void mlfqs_recent_cpu_update(struct thread* t,void* aux UNUSED);
+/* 当前线程的 recent_cpu 自增1 */
+static void mlfqs_recent_cpu_increase(void);
+/* 更新load_avg */
+static void mlfqs_load_avg_update(void);
+
 /** Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -109,6 +123,8 @@ thread_start (void)
   struct semaphore idle_started;
   sema_init (&idle_started, 0);
   thread_create ("idle", PRI_MIN, idle, &idle_started);
+  /* 初始化 load_avg */
+  load_avg=INT_TO_FP(0);
 
   /* Start preemptive thread scheduling. */
   intr_enable ();
@@ -133,7 +149,24 @@ thread_tick (void)
 #endif
   else
     kernel_ticks++;
-
+  
+  /* mlfqs
+   * 每 4 ticks，更新所有线程的 priority
+   * 每 1 second（TIMER_FREQ ticks）更新所有线程的 load_avg 和 recent_cpu
+   * 每 1 tick，当前正在运行线程的 recent_cpu 增加 1
+   */
+  if(thread_mlfqs)
+  {
+    int64_t ticks=timer_ticks();
+    mlfqs_recent_cpu_increase();
+    if(ticks%TIMER_FREQ==0)
+    {
+      mlfqs_load_avg_update();
+      thread_foreach((thread_action_func*)&mlfqs_recent_cpu_update,NULL);
+    }
+    if (ticks % 4 == 0)
+      thread_foreach((thread_action_func *)&mlfqs_priority_update, NULL);
+  }
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
     intr_yield_on_return ();
@@ -171,6 +204,7 @@ thread_create (const char *name, int priority,
   struct switch_entry_frame *ef;
   struct switch_threads_frame *sf;
   tid_t tid;
+  enum intr_level old_level;
 
   ASSERT (function != NULL);
 
@@ -182,6 +216,8 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+
+  old_level=intr_disable();
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -198,9 +234,20 @@ thread_create (const char *name, int priority,
   sf->eip = switch_entry;
   sf->ebp = 0;
 
+  intr_set_level(old_level);
+  
   /* Add to run queue. */
   thread_unblock (t);
-
+  
+  old_level=intr_disable();
+  /* 若有任何线程被加入 ready_list 时优先级高于当前线程的优先级，
+   当前线程应当立即放弃 CPU 控制权*/
+  if(thread_current()->priority < priority)
+  {
+    //printf("抢占式调度发生，%s\n",t->name);
+    thread_yield();
+  }
+  intr_set_level(old_level);
   return tid;
 }
 
@@ -237,7 +284,10 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered(&ready_list,
+                      &t->elem,
+                      (list_less_func*)&thread_priority_cmp,
+                       NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -308,7 +358,10 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    list_insert_ordered (&ready_list, 
+                         &cur->elem,
+                         (list_less_func*)&thread_priority_cmp,
+                         NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -335,13 +388,42 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+    /* A thread may raise or lower its own priority at any time, 
+    but lowering its priority such that it no longer has the highest priority 
+    must cause it to immediately yield the CPU. */
+    /* 如果进程优先级降低，则立刻交出 CPU 控制权 */
+    /* 如果在调用该函数时设置了较低的优先级，而此时当前线程其实拥有较高
+       的捐赠优先级，则先改变 prev_priority, priority 不变 */
+    if(thread_mlfqs)
+      return;
+    enum intr_level old_level=intr_disable();
+    struct thread* curr_thread=thread_current();
+    int old_priority=curr_thread->priority;
+
+    /* 若当前线程持有锁，且设置较低优先级，则只改变 prev_priority 
+       否则，除了改变 prev_priority，还要做其他判断 */
+    curr_thread->prev_priority=new_priority;
+    
+    /* 若当前线程未持有锁，或设置的优先级高于当前优先级 */
+    if(list_empty(&curr_thread->hold_locks) ||
+       new_priority>curr_thread->priority )
+    { 
+       //printf("%d %d\n",curr_thread->priority,new_priority);
+       curr_thread->priority=new_priority;
+    }
+
+    /* 若当前线程未持有锁，且设置的优先级低于当前优先级 */
+    if(curr_thread->priority < old_priority)
+      thread_yield();
+    intr_set_level(old_level);
 }
 
 /** Returns the current thread's priority. */
 int
 thread_get_priority (void) 
 {
+  if(thread_mlfqs)
+    mlfqs_priority_update(thread_current(),NULL);
   return thread_current ()->priority;
 }
 
@@ -350,6 +432,15 @@ void
 thread_set_nice (int nice UNUSED) 
 {
   /* Not yet implemented. */
+  if(nice>NICE_MAX)
+    thread_current()->nice=NICE_MAX;
+  else if(nice<NICE_MIN)
+    thread_current()->nice=NICE_MIN;
+  else thread_current()->nice=nice;
+
+  mlfqs_priority_update(thread_current(),NULL);
+  
+  thread_yield();
 }
 
 /** Returns the current thread's nice value. */
@@ -357,7 +448,7 @@ int
 thread_get_nice (void) 
 {
   /* Not yet implemented. */
-  return 0;
+  return thread_current()->nice;
 }
 
 /** Returns 100 times the system load average. */
@@ -365,7 +456,7 @@ int
 thread_get_load_avg (void) 
 {
   /* Not yet implemented. */
-  return 0;
+  return FP_TO_INT_ROUND_NEAREAST(MUL_FI(load_avg,100));
 }
 
 /** Returns 100 times the current thread's recent_cpu value. */
@@ -373,7 +464,7 @@ int
 thread_get_recent_cpu (void) 
 {
   /* Not yet implemented. */
-  return 0;
+  return FP_TO_INT_ROUND_NEAREAST(MUL_FI(thread_current()->recent_cpu,100));
 }
 
 /** Idle thread.  Executes when no other thread is ready to run.
@@ -461,11 +552,42 @@ init_thread (struct thread *t, const char *name, int priority)
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
-  t->priority = priority;
+  //printf("Init %d\n",t->priority)
   t->magic = THREAD_MAGIC;
-
+  
+  /* 初始化当前线程 */
+  list_init(&t->hold_locks);
+  t->wait_lock=NULL;
+  
+  /*
+   * The initial thread starts with a nice value of zero.
+   * Other threads start with a nice value inherited from their parent thread.
+   * The initial value of recent_cpu is 0 in the first thread created, 
+   * or the parent's value in other new threads.
+   */
+  if(thread_mlfqs)
+  {
+    if(strcmp(t->name,"main")==0)
+    {
+      t->nice=NICE_DEFAULT;
+      t->recent_cpu=INT_TO_FP(0);
+    }
+    else
+    {
+      t->nice=thread_get_nice();
+      t->recent_cpu=DIV_FI(thread_get_recent_cpu(),100);
+    }
+  }
+  if (!thread_mlfqs)
+      t->priority = priority;
+  else
+      mlfqs_priority_update(t,NULL);
+  t->prev_priority=t->priority;
   old_level = intr_disable ();
-  list_push_back (&all_list, &t->allelem);
+  list_insert_ordered(&all_list,
+                      &t->allelem,
+                      (list_less_func*)thread_priority_cmp,
+                      NULL);
   intr_set_level (old_level);
 }
 
@@ -493,7 +615,7 @@ next_thread_to_run (void)
   if (list_empty (&ready_list))
     return idle_thread;
   else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+      return list_entry (list_pop_front (&ready_list), struct thread, elem);
 }
 
 /** Completes a thread switch by activating the new thread's page
@@ -559,7 +681,7 @@ schedule (void)
   ASSERT (intr_get_level () == INTR_OFF);
   ASSERT (cur->status != THREAD_RUNNING);
   ASSERT (is_thread (next));
-
+  
   if (cur != next)
     prev = switch_threads (cur, next);
   thread_schedule_tail (prev);
@@ -578,7 +700,103 @@ allocate_tid (void)
 
   return tid;
 }
-
+bool
+thread_priority_cmp(const struct list_elem *a,
+                    const struct list_elem *b,
+                    void *aux)
+{
+  aux=aux;
+  struct thread* threada=list_entry(a,struct thread,elem);
+  struct thread* threadb=list_entry(b,struct thread,elem);
+  return threada->priority > threadb->priority;
+}
+
+void update_ready_list(void)
+{
+  list_sort(&ready_list,(list_less_func*)thread_priority_cmp,NULL);
+}
+
+void print_ready_list(void)
+{
+  printf("READY_LIST\n");
+  if (list_empty(&ready_list))
+    printf("READY_LIST_EMPTY\n");
+  else
+  {
+    struct list_elem *e = list_front(&ready_list);
+    while (e != list_end(&ready_list))
+    {
+      struct thread *t = list_entry(e, struct thread, elem);
+      printf("THREAD: %s; PRI: %d;\n", t->name, t->priority);
+      e = list_next(e);
+    }
+  }
+}
 /** Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+/* MLFQS */
+
+/* 更新单一线程的优先级
+ * PRI = PRI_MAX - RECENT_CPU / 4 - 2 * NICE 
+ * 每 4 ticks 发生一次
+ */ 
+static void mlfqs_priority_update(struct thread * t, void *aux UNUSED)
+{
+  if( t!=idle_thread)
+  {
+    int pri=PRI_MAX-FP_TO_INT_ROUND_NEAREAST(t->recent_cpu)/4-2*t->nice;
+    if(pri>PRI_MAX)
+      pri=PRI_MAX;
+    if(pri<PRI_MIN)
+      pri=PRI_MIN;
+    t->priority=pri;
+  }
+}
+
+/* 更新单一线程的 recent_cpu 
+ * recent_cpu=(2*load_avg/(2*load_avg+1))*recent_cpu+nice, 且恒大于 0
+ * 每 1 second(TIMER_FREQ*ticks) 发生一次
+ */
+static void mlfqs_recent_cpu_update(struct thread *t, void *aux UNUSED)
+{
+  if(t!=idle_thread)
+  {
+    fixed_point_t r_cpu=
+      MUL_FF(
+        DIV_FF(
+          load_avg*2,
+          ADD_FI(load_avg*2,1)
+          ),
+        t->recent_cpu
+      )+INT_TO_FP(t->nice);
+    if(r_cpu<0)
+      r_cpu=0;
+    t->recent_cpu=r_cpu;
+  }
+}
+/* 当前线程的 recent_cpu 自增1，
+ * 每 1 tick 发生一次
+ */
+static void mlfqs_recent_cpu_increase(void)
+{
+  struct thread* t=thread_current();
+  if(t!=idle_thread)
+    t->recent_cpu=ADD_FI(t->recent_cpu,1);
+}
+/* 更新load_avg
+ * load_avg=(59/60)*load_avg+(1/60)*ready_threads
+ * ready_threads 是正在运行中和在ready_list中的线程的数量，除了idle
+ * 每 1 second 发生一次
+ */
+static void mlfqs_load_avg_update(void)
+{
+  fixed_point_t coefficient_1=DIV_FF(INT_TO_FP(59),INT_TO_FP(60));
+  fixed_point_t coefficient_2=DIV_FF(INT_TO_FP(1),INT_TO_FP(60));
+  int ready_threads=list_size(&ready_list);
+  if(thread_current()!=idle_thread)
+    ready_threads=ready_threads+1;
+  load_avg=MUL_FF(coefficient_1,load_avg)+
+           coefficient_2*ready_threads;
+}
