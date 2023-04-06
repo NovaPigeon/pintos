@@ -1,6 +1,14 @@
 #ifndef __LIB_DEBUG_H
 #define __LIB_DEBUG_H
 
+//#define DEBUG_SYSCALL
+
+#ifdef DEBUG_SYSCALL
+#define dbg_printf(...) printf(__VA_ARGS__)
+#else
+#define dbg_printf(...)
+#endif
+
 /** GCC lets us add "attributes" to functions, function
    parameters, etc. to indicate their properties.
    See the GCC manual for details. */

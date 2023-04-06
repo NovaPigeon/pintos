@@ -108,9 +108,6 @@ struct thread
     int nice;
     fixed_point_t recent_cpu;
     
-
-
-
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /**< Page directory. */
@@ -118,7 +115,21 @@ struct thread
 
     /* Owned by thread.c. */
     unsigned magic;                     /**< Detects stack overflow. */
+    
+    int exit_state;                     /**< 用于记录退出状态，初始化为 0 */
   };
+
+/**
+ * 存储子进程的信息，因为父进程应当能在子进程消亡后仍能访问这些信息，
+ * 所以不应该直接把这些信息写在 thread 里，而应另起结构体，并用 malloc
+ * 将该结构体分配到堆上。
+ */
+struct as_child_info
+{
+   /* 初始化为本进程的 t_id，在进程消亡后父进程仍能访问之 */
+   tid_t tid;
+   bool is_alive;
+};
 
 /** If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -162,6 +173,6 @@ bool thread_priority_cmp(const struct list_elem *a,
                          void *aux);
 void update_ready_list(void);
 void print_ready_list(void);
-
+int thread_dead(tid_t tid);
 
 #endif /**< threads/thread.h */

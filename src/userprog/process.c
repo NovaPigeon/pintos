@@ -20,7 +20,9 @@
 
 /* 规定可以传入的参数的最大数量 */
 #define MAX_ARG_NUM 128
-#define DEBUG_USER_PROG
+/* 指针大小为 4 字节 */
+#define PTR_SIZE (sizeof(void *))
+//#define DEBUG_USER_PROG
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -97,7 +99,9 @@ start_process (void *file_name_)
   success = load (cmd, &if_.eip, &if_.esp);
 
   if(success)
+  {
     process_pass_args(&if_.esp,fn_copy);
+  }
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
@@ -168,6 +172,7 @@ process_pass_args(void **esp, void *command_line)
       size_t arg_len=strlen(token)+1;
       *esp-=arg_len;
       memcpy(*esp,token,arg_len);
+      dbg_printf("%s\n",token);
       /* 将各参数的地址记录下来 */
       argv[argc++]=*esp;
   }
@@ -178,24 +183,23 @@ process_pass_args(void **esp, void *command_line)
   uintptr_t esp_tmp=(uintptr_t)*esp;
   *esp=(void*)(esp_tmp-esp_tmp%4);
 
-  size_t ptr_size=4;
   /* 5. 按从右到左的次序，推入各参数的地址 */
   for(int i=argc;i>=0;--i)
   {
-    *esp-=ptr_size;
+    *esp-=PTR_SIZE;
     *(int *)*esp=(int)argv[i];
   }
   /* 6. 推入 argv[0] 的地址和 argc */
-  *esp-=ptr_size;
-  *(int *)*esp=(int)*esp+ptr_size;
-  *esp-=ptr_size;
+  *esp-=PTR_SIZE;
+  *(int *)*esp=(int)*esp+PTR_SIZE;
+  *esp-=PTR_SIZE;
   *(int *)*esp=argc;
 
   /* 7. 推入虚假的返回地址 */
-  *esp-=ptr_size;
+  *esp-=PTR_SIZE;
   *(int *)*esp=0;
 
-#ifdef DEBUG_USER_PROG
+#ifdef DEBUG_SYSCALL
   printf("PASS ARGS:\nESP: %p\n",*esp);
   hex_dump((uintptr_t)*esp,*esp,100,true);
 #endif
@@ -216,6 +220,12 @@ process_pass_args(void **esp, void *command_line)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  while (1)
+  {
+    thread_yield();
+    if (thread_dead(child_tid))
+      break;
+  }
   return -1;
 }
 

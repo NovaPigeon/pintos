@@ -267,7 +267,6 @@ thread_block (void)
 {
   ASSERT (!intr_context ());
   ASSERT (intr_get_level () == INTR_OFF);
-
   thread_current ()->status = THREAD_BLOCKED;
   schedule ();
 }
@@ -345,6 +344,8 @@ thread_exit (void)
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
   intr_disable ();
+  /* 处理终止信息 */
+  printf("%s: exit(%d)\n", thread_name(), thread_current()->exit_state);
   list_remove (&thread_current()->allelem);
   thread_current ()->status = THREAD_DYING;
   schedule ();
@@ -490,7 +491,6 @@ idle (void *idle_started_ UNUSED)
   struct semaphore *idle_started = idle_started_;
   idle_thread = thread_current ();
   sema_up (idle_started);
-
   for (;;) 
     {
       /* Let someone else run. */
@@ -591,6 +591,7 @@ init_thread (struct thread *t, const char *name, int priority)
   else
       mlfqs_priority_update(t,NULL);
   t->prev_priority=t->priority;
+  t->exit_state=0;
   old_level = intr_disable ();
   list_insert_ordered(&all_list,
                       &t->allelem,
@@ -807,4 +808,17 @@ static void mlfqs_load_avg_update(void)
     ready_threads=ready_threads+1;
   load_avg=MUL_FF(coefficient_1,load_avg)+
            coefficient_2*ready_threads;
+}
+
+int thread_dead(tid_t tid)
+{
+  struct list_elem *e;
+  for (e = list_begin(&all_list); e != list_end(&all_list);
+       e = list_next(e))
+  {
+    struct thread *t = list_entry(e, struct thread, allelem);
+    if (t->tid == tid)
+      return 0;
+  }
+  return 1;
 }
