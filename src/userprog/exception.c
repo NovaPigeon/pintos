@@ -89,6 +89,8 @@ kill (struct intr_frame *f)
       printf ("%s: dying due to interrupt %#04x (%s).\n",
               thread_name (), f->vec_no, intr_name (f->vec_no));
       intr_dump_frame (f);
+      /* 对于其他用户进程引起的异常（如直接访问空指针），应将 exit_state 设为 -1 */
+      thread_current()->exit_state=-1;
       thread_exit (); 
 
     case SEL_KCSEG:
@@ -147,6 +149,19 @@ page_fault (struct intr_frame *f)
   not_present = (f->error_code & PF_P) == 0;
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
+
+  /** 如果 kernel 是正确的，那在内核上下文中发生 page fault 的唯一可能是在处理
+   * system call 中用户提供的指针时发生了错误，也就是说 user=false 当且仅当
+   * system_call 中传递的指针出错了  */
+  if (!user)
+  {
+      /** 如果页面错误是由系统调用的错误引用触发的，
+       * 只需将eax设置为0xffffffff（作为返回值-1），
+       * 并将其以前的值复制到eip中。 */
+      f->eip = (void (*)(void))f->eax;
+      f->eax = -1;
+      return;
+  }
 
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to

@@ -11,6 +11,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -222,6 +223,17 @@ thread_create (const char *name, int priority,
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
 
+  /* 将结构体分配到堆上 */
+  t->as_child=malloc(sizeof(struct as_child_info));
+  t->as_child->tid=t->tid;
+  t->as_child->process_self=t;
+  t->as_child->is_alive=true;
+  t->as_child->store_exit_state=0;
+  t->as_child->is_waited=false;
+  sema_init(&t->as_child->wait_sema,0);
+  if(t->parent!=NULL)
+    list_push_back(&t->parent->childs,&t->as_child->as_child_elem);
+
   old_level=intr_disable();
 
   /* Stack frame for kernel_thread(). */
@@ -245,6 +257,7 @@ thread_create (const char *name, int priority,
   thread_unblock (t);
   
   old_level=intr_disable();
+
   /* 若有任何线程被加入 ready_list 时优先级高于当前线程的优先级，
    当前线程应当立即放弃 CPU 控制权*/
   if(thread_current()->priority < priority)
@@ -344,10 +357,39 @@ thread_exit (void)
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
   intr_disable ();
+  struct thread* t_cur=thread_current();
+  
   /* 处理终止信息 */
-  printf("%s: exit(%d)\n", thread_name(), thread_current()->exit_state);
-  list_remove (&thread_current()->allelem);
-  thread_current ()->status = THREAD_DYING;
+  printf("%s: exit(%d)\n", thread_name(), t_cur->exit_state);
+  
+  /* 需要将所有子进程的parent置为空，方便释放资源，同时，需要释放已经消亡的进程的资源 */
+  struct list_elem *child_elem=list_begin(&t_cur->childs);
+  struct as_child_info *child_info=NULL;
+  for(;child_elem!=list_end(&t_cur->childs);child_elem=list_next(child_elem))
+  {
+    child_info=list_entry(child_elem,struct as_child_info,as_child_elem);
+    if(child_info->is_alive==true)
+      child_info->process_self->parent=NULL;
+    //else
+      //free(child_info);
+  }
+  
+  /* 若该进程的父进程为空，则可释放其资源 */
+  if(t_cur->parent==NULL)
+    free(t_cur->as_child);
+  else
+  {
+    t_cur->as_child->is_alive=false;
+    /* 进程消亡后应不能再访问结构体 thread 中的信息 */
+    t_cur->as_child->process_self=NULL;
+    /* 将 exit_state 存储，用于父进程在子进程消亡后访问 */
+    t_cur->as_child->store_exit_state = t_cur->exit_state;
+    /* 将控制权交给父进程 */
+    if(t_cur->as_child->is_waited==true)
+      sema_up(&t_cur->as_child->wait_sema);
+  }
+  list_remove (&t_cur->allelem);
+  t_cur->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
 }
@@ -562,7 +604,19 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   //printf("Init %d\n",t->priority)
   t->magic = THREAD_MAGIC;
-  
+
+  /* lab 2 */
+  t->exit_state = 0;
+  list_init(&t->childs);
+  sema_init(&t->sema_exec, 0);
+  t->success = false;
+  if (t == initial_thread)
+      t->parent = NULL;
+  else
+      t->parent = thread_current();
+
+  /* lab 1 */
+
   /* 初始化当前线程 */
   list_init(&t->hold_locks);
   t->wait_lock=NULL;
@@ -591,13 +645,14 @@ init_thread (struct thread *t, const char *name, int priority)
   else
       mlfqs_priority_update(t,NULL);
   t->prev_priority=t->priority;
-  t->exit_state=0;
+
   old_level = intr_disable ();
   list_insert_ordered(&all_list,
                       &t->allelem,
                       (list_less_func*)thread_priority_cmp,
                       NULL);
   intr_set_level (old_level);
+
 }
 
 /** Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -808,17 +863,4 @@ static void mlfqs_load_avg_update(void)
     ready_threads=ready_threads+1;
   load_avg=MUL_FF(coefficient_1,load_avg)+
            coefficient_2*ready_threads;
-}
-
-int thread_dead(tid_t tid)
-{
-  struct list_elem *e;
-  for (e = list_begin(&all_list); e != list_end(&all_list);
-       e = list_next(e))
-  {
-    struct thread *t = list_entry(e, struct thread, allelem);
-    if (t->tid == tid)
-      return 0;
-  }
-  return 1;
 }

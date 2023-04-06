@@ -17,6 +17,7 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 
 /* 规定可以传入的参数的最大数量 */
 #define MAX_ARG_NUM 128
@@ -66,6 +67,10 @@ process_execute (const char *file_name)
     palloc_free_page (fn_copy_0); 
     palloc_free_page (fn_copy_1);
   }
+  sema_down(&thread_current()->sema_exec);
+  if(thread_current()->success==false)
+    return TID_ERROR;
+  thread_current()->success=false;
   return tid;
 }
 
@@ -101,13 +106,20 @@ start_process (void *file_name_)
   if(success)
   {
     process_pass_args(&if_.esp,fn_copy);
+    thread_current()->parent->success=true;
+    sema_up(&thread_current()->parent->sema_exec);
   }
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
   palloc_free_page (fn_copy);
   if (!success) 
+  {
+    thread_current()->as_child->is_alive=false;
+    thread_current()->exit_state=-1;
+    sema_up(&thread_current()->parent->sema_exec);
     thread_exit ();
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -208,23 +220,51 @@ process_pass_args(void **esp, void *command_line)
 
 }
 
-/** Waits for thread TID to die and returns its exit status.  If
-   it was terminated by the kernel (i.e. killed due to an
-   exception), returns -1.  If TID is invalid or if it was not a
-   child of the calling process, or if process_wait() has already
-   been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+/*
+ * System Call: int wait (pid_t pid)
+ * - 等待某个子进程结束（pid），并返回其 exit_state
+ * - 如果该子进程仍活跃：
+ *  - 等待他结束， 然后返回其 exit_state
+ *  - 如果进程没有正常调用 exit() 以结束, 而是被内核终止（如被异常终止）, wait(pid) 应该返回 -1
+ * - 父进程等待一个已经终止的子进程是完全合法的
+ *  - 但是 wait 的返回仍要求是有效的，具体含义见上。
+ * - 若以下任何条件为真，wait 必须立即失败并返回 -1
+ *  - pid 并非调用者的直接子进程。（进程之间不存在继承关系，也就是不存在孙进程）（孤儿进程同理）
+ *  - pid 不存在
+ *  - 如果该子进程已经被 wait 过了
+ * - 进程可以生成任意数量的子进程，以任意顺序等待他们，甚至先于子进程结束。
+ *  - 应考虑所有情况
+ *  - 进程的所有资源，包括其 struct thread，应该在进程终结后被释放，无论其父进程是否等待他，
+ *     或者他是否先于其父进程结束。
+ * - 必须确保 Pintos 在初始进程退出前不会终止
+ *  - 现有的代码通过在 pintos_init() (in threads/init.c) 中调用 process_wait() 来实现
+ *  - 我们建议您根据函数顶部的注释实现process_wait()，然后根据process_wwait()实现 syscall_wait()。
+ */
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  while (1)
+  struct list *childs_list=&thread_current()->childs;
+  struct list_elem *child_elem=list_begin(childs_list);
+  struct as_child_info *child_info=NULL;
+  for(;child_elem!=list_end(childs_list);child_elem=list_next(child_elem))
   {
-    thread_yield();
-    if (thread_dead(child_tid))
-      break;
+    child_info=list_entry(child_elem, struct as_child_info, as_child_elem);
+    /* 遍历子进程列表 */
+    if(child_info->tid==child_tid)
+    {
+      
+      if(child_info->is_waited==true)
+        return -1;
+      if(child_info->is_alive==true)
+      {
+        child_info->is_waited=true;
+        sema_down(&child_info->wait_sema);
+        return child_info->store_exit_state;
+      }
+      else
+        return child_info->store_exit_state;
+    }
+
   }
   return -1;
 }
