@@ -92,7 +92,7 @@ start_process (void *file_name_)
   
   /* 此处的拷贝不是为了防止竞争，因为传入的参数本身就已经是拷贝，
      而是为了方便分别处理命令和参数 */
-  char *fn_copy = malloc(strlen(file_name) + 1);
+  char *fn_copy = palloc_get_page(0);
   strlcpy(fn_copy,file_name,PGSIZE);
   
   struct intr_frame if_;
@@ -117,7 +117,7 @@ start_process (void *file_name_)
   if (!success) 
   {
     palloc_free_page(file_name);
-    free(fn_copy);
+    palloc_free_page(fn_copy);
     thread_current()->as_child->is_alive=false;
     thread_current()->exit_state=-1;
     sema_up(&thread_current()->parent->sema_exec);
@@ -140,7 +140,7 @@ start_process (void *file_name_)
   
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  free (fn_copy);
+  palloc_free_page (fn_copy);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in

@@ -158,7 +158,7 @@ page_fault (struct intr_frame *f)
       /** 如果页面错误是由系统调用的错误引用触发的，
        * 只需将eax设置为0xffffffff（作为返回值-1），
        * 并将其以前的值复制到eip中。 */
-      f->eip = (void (*)(void))f->eax;
+      f->eip = f->eax;
       f->eax = -1;
       return;
   }

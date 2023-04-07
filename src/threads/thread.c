@@ -361,7 +361,6 @@ thread_exit (void)
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
-  intr_disable ();
   struct thread* t_cur=thread_current();
   
   /* 处理终止信息 */
@@ -370,6 +369,7 @@ thread_exit (void)
   /* 需要将所有子进程的parent置为空，方便释放资源，同时，需要释放已经消亡的进程的资源 */
   struct list_elem *child_elem=list_begin(&t_cur->childs);
   struct as_child_info *child_info=NULL;
+  /*
   for(;child_elem!=list_end(&t_cur->childs);child_elem=list_next(child_elem))
   {
     child_info=list_entry(child_elem,struct as_child_info,as_child_elem);
@@ -378,7 +378,16 @@ thread_exit (void)
     //else
       //free(child_info);
   }
-
+  */
+  while(!list_empty(&t_cur->childs))
+  {
+    child_elem = list_pop_front(&t_cur->childs);
+    child_info = list_entry(child_elem, struct as_child_info, as_child_elem);
+    if (child_info->is_alive == true)
+      child_info->process_self->parent = NULL;
+    //printf("free: %s\n",child_info->process_self->name);
+    free(child_info);
+  }
   /* 进程消亡时，需要释放其打开的所有文件资源 */
   struct list_elem *elem;
   struct list *files_list=&t_cur->files;
@@ -389,15 +398,14 @@ thread_exit (void)
     elem=list_pop_front(files_list);
     file_info=list_entry(elem,struct thread_file,file_elem);
     file_close(file_info->file);
-    list_remove(elem);
     free(file_info);
   }
   lock_release(&filesys_lock);
 
   /* 若该进程的父进程为空，则可释放其资源 */
-  if(t_cur->parent==NULL)
-    free(t_cur->as_child);
-  else
+  //if(t_cur->parent==NULL)
+    //free(t_cur->as_child);
+  //else
   {
     t_cur->as_child->is_alive=false;
     /* 进程消亡后应不能再访问结构体 thread 中的信息 */
@@ -408,6 +416,8 @@ thread_exit (void)
     if(t_cur->as_child->is_waited==true)
       sema_up(&t_cur->as_child->wait_sema);
   }
+
+  intr_disable();
   list_remove (&t_cur->allelem);
   t_cur->status = THREAD_DYING;
   schedule ();

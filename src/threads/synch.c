@@ -120,13 +120,13 @@ void sema_up(struct semaphore *sema)
     thread_unblock(list_entry(list_pop_front(&sema->waiters),
                               struct thread, elem));
   }
-  sema->value++;
-  if(intr_context())
+  sema->value++;   
+  intr_set_level(old_level);
+
+  if (intr_context())
     intr_yield_on_return();
   else
     thread_yield();
-    
-  intr_set_level(old_level);
 }
 
 static void sema_test_helper(void *sema_);
