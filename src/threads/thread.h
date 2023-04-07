@@ -34,6 +34,7 @@ typedef int tid_t;
 
 struct thread;
 struct as_child_info;
+struct thread_file;
 
 /** A kernel thread or user process.
 
@@ -126,6 +127,12 @@ struct thread
    int exit_state;                  /**< 用于记录退出状态，初始化为 0. */
    bool success;                    /**< 记录当前进程是否被成功加载/运行. */
    struct semaphore sema_exec;      /**< 实现 exec 时的同步. */
+
+   struct list files;               /**< 存储进程打开的文件. */
+
+   /**< 记录描述符池中已经被分配的最大文件描述符，用于分配下一个打开的文件描述符，我们设计文件描述符只增不减. */
+   int max_alloc_fd;    
+   struct file* exec_prog;          /**< 记录当前进程正在运行的文件，该文件无法被修改. */  
 };
 
 /**
@@ -149,6 +156,17 @@ struct as_child_info
    struct semaphore wait_sema;
    /* 作为子线程，供父进程访问的抓手 */
    struct list_elem as_child_elem;
+};
+
+/* 用于存储进程打开的文件的信息 */
+struct thread_file
+{
+   /* 文件描述符 */
+   int fd;
+   /* 文件指针 */
+   struct file* file;
+   struct list_elem file_elem;
+
 };
 
 /** If false (default), use round-robin scheduler.

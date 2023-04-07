@@ -12,6 +12,8 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
+#include "filesys/filesys.h"
+#include "filesys/file.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -109,6 +111,9 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  
+  /* 初始化文件系统的锁 */
+  lock_init(&filesys_lock);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -373,7 +378,22 @@ thread_exit (void)
     //else
       //free(child_info);
   }
-  
+
+  /* 进程消亡时，需要释放其打开的所有文件资源 */
+  struct list_elem *elem;
+  struct list *files_list=&t_cur->files;
+  struct thread_file *file_info;
+  lock_acquire(&filesys_lock);
+  while(!list_empty(files_list))
+  {
+    elem=list_pop_front(files_list);
+    file_info=list_entry(elem,struct thread_file,file_elem);
+    file_close(file_info->file);
+    list_remove(elem);
+    free(file_info);
+  }
+  lock_release(&filesys_lock);
+
   /* 若该进程的父进程为空，则可释放其资源 */
   if(t_cur->parent==NULL)
     free(t_cur->as_child);
@@ -608,8 +628,11 @@ init_thread (struct thread *t, const char *name, int priority)
   /* lab 2 */
   t->exit_state = 0;
   list_init(&t->childs);
+  list_init(&t->files);
   sema_init(&t->sema_exec, 0);
   t->success = false;
+  t->max_alloc_fd=STDOUT_FILENO;
+
   if (t == initial_thread)
       t->parent = NULL;
   else

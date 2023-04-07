@@ -48,8 +48,13 @@ process_execute (const char *file_name)
   fn_copy_1 = palloc_get_page (0);
   
   if (fn_copy_0 == NULL || fn_copy_1==NULL)
+  {
+    if(fn_copy_0!=NULL)
+      palloc_free_page(fn_copy_0);
+    if(fn_copy_1!=NULL)
+      palloc_free_page(fn_copy_1);
     return TID_ERROR;
-  
+  }
   /* 参数的大小应被限制在一页的范畴内 */
   strlcpy (fn_copy_0, file_name, PGSIZE);
   strlcpy (fn_copy_1, file_name, PGSIZE);
@@ -62,15 +67,17 @@ process_execute (const char *file_name)
      事实上，thread_create 的第一个参数与 start_process 无关，它仅起到给线程命名的作用，
      故不会产生竞争，我们只要关注最后一个参数，它才是传给 start_process 的参数 */
   tid = thread_create (cmd, PRI_DEFAULT, start_process, fn_copy_1);
+  palloc_free_page(fn_copy_0);
   if (tid == TID_ERROR)
   {
-    palloc_free_page (fn_copy_0); 
-    palloc_free_page (fn_copy_1);
-  }
-  sema_down(&thread_current()->sema_exec);
-  if(thread_current()->success==false)
+    palloc_free_page(fn_copy_1);
     return TID_ERROR;
-  thread_current()->success=false;
+  }
+
+  sema_down(&thread_current()->sema_exec);
+  if (thread_current()->success == false)
+    return TID_ERROR;
+  thread_current()->success = false;
   return tid;
 }
 
@@ -85,8 +92,7 @@ start_process (void *file_name_)
   
   /* 此处的拷贝不是为了防止竞争，因为传入的参数本身就已经是拷贝，
      而是为了方便分别处理命令和参数 */
-  char *fn_copy;
-  fn_copy=palloc_get_page(0);
+  char *fn_copy = malloc(strlen(file_name) + 1);
   strlcpy(fn_copy,file_name,PGSIZE);
   
   struct intr_frame if_;
@@ -100,9 +106,24 @@ start_process (void *file_name_)
 
   /* 之后file_name被丢弃，改为使用 fn_copy */
   cmd = strtok_r(file_name," ",&save_ptr);
+
+  lock_acquire(&filesys_lock);
   /* 此处不需要传入参数 */
   success = load (cmd, &if_.eip, &if_.esp);
+  lock_release(&filesys_lock);
 
+  
+
+  if (!success) 
+  {
+    palloc_free_page(file_name);
+    free(fn_copy);
+    thread_current()->as_child->is_alive=false;
+    thread_current()->exit_state=-1;
+    sema_up(&thread_current()->parent->sema_exec);
+    thread_exit ();
+  }
+  
   if(success)
   {
     process_pass_args(&if_.esp,fn_copy);
@@ -110,16 +131,16 @@ start_process (void *file_name_)
     sema_up(&thread_current()->parent->sema_exec);
   }
 
+  /* 当前进程正在运行某文件时，阻止对它的访问 */
+  lock_acquire(&filesys_lock);
+  struct file *exec_file=filesys_open(cmd);
+  file_deny_write(exec_file);
+  thread_current()->exec_prog=exec_file;
+  lock_release(&filesys_lock);
+  
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  palloc_free_page (fn_copy);
-  if (!success) 
-  {
-    thread_current()->as_child->is_alive=false;
-    thread_current()->exit_state=-1;
-    sema_up(&thread_current()->parent->sema_exec);
-    thread_exit ();
-  }
+  free (fn_copy);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -262,7 +283,9 @@ process_wait (tid_t child_tid UNUSED)
         return child_info->store_exit_state;
       }
       else
+      {
         return child_info->store_exit_state;
+      }
     }
 
   }
@@ -275,6 +298,15 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  /* 关闭当前进程正在运行的文件 */
+  if(cur->exec_prog!=NULL)
+  {
+    lock_acquire(&filesys_lock);
+    file_allow_write(cur->exec_prog);
+    file_close(cur->exec_prog);
+    lock_release(&filesys_lock);
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -490,6 +522,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
+  
   file_close (file);
   return success;
 }
