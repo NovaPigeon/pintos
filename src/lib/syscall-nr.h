@@ -1,6 +1,8 @@
 #ifndef __LIB_SYSCALL_NR_H
 #define __LIB_SYSCALL_NR_H
 
+/* 存储所有系统调用函数的数组 */
+#define SYSCALL_NUM 20
 /** System call numbers. */
 enum 
   {

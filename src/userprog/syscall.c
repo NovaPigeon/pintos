@@ -12,9 +12,8 @@
 #include "pagedir.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "devices/timer.h"
 
-/* 存储所有系统调用函数的数组 */
-#define SYSCALL_NUM 13
 /* 指针大小 */
 #define PTR_SIZE (sizeof(void *))
 
@@ -242,6 +241,8 @@ syscall_read(struct intr_frame *f)
   unsigned size = *(int *)check_read_vaddr(user_ptr + 3 * PTR_SIZE, sizeof(unsigned));
   check_write_vaddr(buffer,size);
   
+  if(fd==STDOUT_FILENO)
+    terminate_offend_process();
   if(fd==STDIN_FILENO)
   {
     for(unsigned i=0;i<size;++i)
@@ -279,6 +280,8 @@ syscall_write(struct intr_frame *f)
   char *buffer = *(char **)check_read_vaddr(user_ptr + 2*PTR_SIZE ,PTR_SIZE);
   unsigned size = *(int *)check_read_vaddr(user_ptr + 3*PTR_SIZE,sizeof(unsigned));
   check_str_vaddr(buffer);
+  if(fd==STDIN_FILENO)
+    terminate_offend_process();
   if (fd == STDOUT_FILENO)
   {
     putbuf(buffer, size);
@@ -425,7 +428,8 @@ check_read_vaddr(const void *vaddr, size_t size)
  * 若是，返回 ptr，若不是，调用 terminate_offend_process()
  * 终止进程，无返回
  */
-static void *check_write_vaddr(void *vaddr, size_t size)
+static void *
+check_write_vaddr(void *vaddr, size_t size)
 {
   /* 若 ptr 不在用户虚拟空间内，直接终止 */
   if (!is_user_vaddr(vaddr))
@@ -449,6 +453,7 @@ static void *check_write_vaddr(void *vaddr, size_t size)
 static void *
 check_str_vaddr(const char *str)
 {
+  
   /* 若 ptr 不在用户虚拟空间内，直接终止 */
   if (!is_user_vaddr((void *)str))
     terminate_offend_process();

@@ -14,6 +14,7 @@
 #include "threads/malloc.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "userprog/syscall.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -111,7 +112,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-  
+
   /* 初始化文件系统的锁 */
   lock_init(&filesys_lock);
 
@@ -236,8 +237,8 @@ thread_create (const char *name, int priority,
   t->as_child->store_exit_state=0;
   t->as_child->is_waited=false;
   sema_init(&t->as_child->wait_sema,0);
-  if(t->parent!=NULL)
-    list_push_back(&t->parent->childs,&t->as_child->as_child_elem);
+  //if(t->parent!=NULL)
+  list_push_back(&thread_current()->childs,&t->as_child->as_child_elem);
 
   old_level=intr_disable();
 
@@ -365,47 +366,44 @@ thread_exit (void)
   
   /* 处理终止信息 */
   printf("%s: exit(%d)\n", thread_name(), t_cur->exit_state);
-  
-  /* 需要将所有子进程的parent置为空，方便释放资源，同时，需要释放已经消亡的进程的资源 */
+
+
+  /* 关闭当前进程正在运行的文件 */
+  if (t_cur->exec_prog != NULL)
+  {
+    lock_acquire(&filesys_lock);
+    file_allow_write(t_cur->exec_prog);
+    file_close(t_cur->exec_prog);
+    lock_release(&filesys_lock);
+  }
+
+  /* 当进程消亡时，清空所有子进程的资源，因为他们不会再被访问 */
   struct list_elem *child_elem=list_begin(&t_cur->childs);
   struct as_child_info *child_info=NULL;
-  /*
-  for(;child_elem!=list_end(&t_cur->childs);child_elem=list_next(child_elem))
-  {
-    child_info=list_entry(child_elem,struct as_child_info,as_child_elem);
-    if(child_info->is_alive==true)
-      child_info->process_self->parent=NULL;
-    //else
-      //free(child_info);
-  }
-  */
   while(!list_empty(&t_cur->childs))
   {
     child_elem = list_pop_front(&t_cur->childs);
     child_info = list_entry(child_elem, struct as_child_info, as_child_elem);
     if (child_info->is_alive == true)
       child_info->process_self->parent = NULL;
-    //printf("free: %s\n",child_info->process_self->name);
     free(child_info);
   }
   /* 进程消亡时，需要释放其打开的所有文件资源 */
   struct list_elem *elem;
   struct list *files_list=&t_cur->files;
   struct thread_file *file_info;
-  lock_acquire(&filesys_lock);
+  
   while(!list_empty(files_list))
   {
+    lock_acquire(&filesys_lock);
     elem=list_pop_front(files_list);
     file_info=list_entry(elem,struct thread_file,file_elem);
     file_close(file_info->file);
     free(file_info);
+    lock_release(&filesys_lock);
   }
-  lock_release(&filesys_lock);
-
-  /* 若该进程的父进程为空，则可释放其资源 */
-  //if(t_cur->parent==NULL)
-    //free(t_cur->as_child);
-  //else
+  
+  if(t_cur->parent!=NULL)
   {
     t_cur->as_child->is_alive=false;
     /* 进程消亡后应不能再访问结构体 thread 中的信息 */
@@ -413,7 +411,7 @@ thread_exit (void)
     /* 将 exit_state 存储，用于父进程在子进程消亡后访问 */
     t_cur->as_child->store_exit_state = t_cur->exit_state;
     /* 将控制权交给父进程 */
-    if(t_cur->as_child->is_waited==true)
+    //if (t_cur->as_child->is_waited == true)
       sema_up(&t_cur->as_child->wait_sema);
   }
 

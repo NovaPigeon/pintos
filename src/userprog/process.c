@@ -44,20 +44,20 @@ process_execute (const char *file_name)
      Otherwise there's a race between the caller and load(). 
      通过深拷贝来避免竞争。
      */
-  fn_copy_0 = palloc_get_page (0);
-  fn_copy_1 = palloc_get_page (0);
-  
-  if (fn_copy_0 == NULL || fn_copy_1==NULL)
+  fn_copy_0 = malloc(strlen(file_name) + 1);
+  fn_copy_1 = malloc(strlen(file_name) + 1);
+
+  if (fn_copy_0 == NULL || fn_copy_1 == NULL)
   {
-    if(fn_copy_0!=NULL)
-      palloc_free_page(fn_copy_0);
-    if(fn_copy_1!=NULL)
-      palloc_free_page(fn_copy_1);
+    if (fn_copy_0 != NULL)
+      free(fn_copy_0);
+    if (fn_copy_1 != NULL)
+      free(fn_copy_1);
     return TID_ERROR;
   }
   /* 参数的大小应被限制在一页的范畴内 */
-  strlcpy (fn_copy_0, file_name, PGSIZE);
-  strlcpy (fn_copy_1, file_name, PGSIZE);
+  strlcpy(fn_copy_0, file_name, strlen(file_name) + 1);
+  strlcpy(fn_copy_1, file_name, strlen(file_name) + 1);
 
   /* 取出命令本身，在此过程中，fn_copy_0 被修改，故弃用 */
   char* save_ptr;
@@ -67,10 +67,10 @@ process_execute (const char *file_name)
      事实上，thread_create 的第一个参数与 start_process 无关，它仅起到给线程命名的作用，
      故不会产生竞争，我们只要关注最后一个参数，它才是传给 start_process 的参数 */
   tid = thread_create (cmd, PRI_DEFAULT, start_process, fn_copy_1);
-  palloc_free_page(fn_copy_0);
+  free(fn_copy_0);
   if (tid == TID_ERROR)
   {
-    palloc_free_page(fn_copy_1);
+    free(fn_copy_1);
     return TID_ERROR;
   }
 
@@ -92,8 +92,8 @@ start_process (void *file_name_)
   
   /* 此处的拷贝不是为了防止竞争，因为传入的参数本身就已经是拷贝，
      而是为了方便分别处理命令和参数 */
-  char *fn_copy = palloc_get_page(0);
-  strlcpy(fn_copy,file_name,PGSIZE);
+  char *fn_copy = malloc(strlen(file_name)+1);
+  strlcpy(fn_copy,file_name,strlen(file_name)+1);
   
   struct intr_frame if_;
   bool success;
@@ -116,8 +116,8 @@ start_process (void *file_name_)
 
   if (!success) 
   {
-    palloc_free_page(file_name);
-    palloc_free_page(fn_copy);
+    free(file_name);
+    free(fn_copy);
     thread_current()->as_child->is_alive=false;
     thread_current()->exit_state=-1;
     sema_up(&thread_current()->parent->sema_exec);
@@ -139,8 +139,8 @@ start_process (void *file_name_)
   lock_release(&filesys_lock);
   
   /* If load failed, quit. */
-  palloc_free_page (file_name);
-  palloc_free_page (fn_copy);
+  free (file_name);
+  free(fn_copy);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -232,6 +232,7 @@ process_pass_args(void **esp, void *command_line)
   *esp-=PTR_SIZE;
   *(int *)*esp=0;
 
+
 #ifdef DEBUG_SYSCALL
   printf("PASS ARGS:\nESP: %p\n",*esp);
   hex_dump((uintptr_t)*esp,*esp,100,true);
@@ -273,18 +274,26 @@ process_wait (tid_t child_tid UNUSED)
     /* 遍历子进程列表 */
     if(child_info->tid==child_tid)
     {
-      
       if(child_info->is_waited==true)
         return -1;
       if(child_info->is_alive==true)
       {
         child_info->is_waited=true;
         sema_down(&child_info->wait_sema);
-        return child_info->store_exit_state;
+
+        /* 被 wait 过的进程就不会再被访问，可以释放其资源 */
+        list_remove(&child_info->as_child_elem);
+        int exit_state=child_info->store_exit_state;
+        free(child_info);
+        return exit_state;
       }
       else
       {
-        return child_info->store_exit_state;
+        child_info->is_waited=true;
+        list_remove(&child_info->as_child_elem);
+        int exit_state = child_info->store_exit_state;
+        free(child_info);
+        return exit_state;
       }
     }
 
@@ -299,14 +308,6 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
-  /* 关闭当前进程正在运行的文件 */
-  if(cur->exec_prog!=NULL)
-  {
-    lock_acquire(&filesys_lock);
-    file_allow_write(cur->exec_prog);
-    file_close(cur->exec_prog);
-    lock_release(&filesys_lock);
-  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */

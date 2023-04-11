@@ -23,6 +23,7 @@
 #include <syscall.h>
 #include <random.h>
 #include "tests/lib.h"
+#include <syscall-nr.h>
 
 static const int EXPECTED_DEPTH_TO_PASS = 30;
 static const int EXPECTED_REPETITIONS = 10;
