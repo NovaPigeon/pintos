@@ -280,20 +280,12 @@ process_wait (tid_t child_tid UNUSED)
       {
         child_info->is_waited=true;
         sema_down(&child_info->wait_sema);
-
-        /* 被 wait 过的进程就不会再被访问，可以释放其资源 */
-        list_remove(&child_info->as_child_elem);
-        int exit_state=child_info->store_exit_state;
-        free(child_info);
-        return exit_state;
+        return child_info->store_exit_state;
       }
       else
       {
         child_info->is_waited=true;
-        list_remove(&child_info->as_child_elem);
-        int exit_state = child_info->store_exit_state;
-        free(child_info);
-        return exit_state;
+        return child_info->store_exit_state;
       }
     }
 

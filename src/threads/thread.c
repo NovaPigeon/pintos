@@ -392,17 +392,17 @@ thread_exit (void)
   struct list_elem *elem;
   struct list *files_list=&t_cur->files;
   struct thread_file *file_info;
-  
+
+  lock_acquire(&filesys_lock);
   while(!list_empty(files_list))
   {
-    lock_acquire(&filesys_lock);
     elem=list_pop_front(files_list);
     file_info=list_entry(elem,struct thread_file,file_elem);
     file_close(file_info->file);
     free(file_info);
-    lock_release(&filesys_lock);
   }
-  
+  lock_release(&filesys_lock);
+
   if(t_cur->parent!=NULL)
   {
     t_cur->as_child->is_alive=false;
@@ -411,7 +411,7 @@ thread_exit (void)
     /* 将 exit_state 存储，用于父进程在子进程消亡后访问 */
     t_cur->as_child->store_exit_state = t_cur->exit_state;
     /* 将控制权交给父进程 */
-    //if (t_cur->as_child->is_waited == true)
+    if (t_cur->as_child->is_waited == true)
       sema_up(&t_cur->as_child->wait_sema);
   }
 

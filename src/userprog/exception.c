@@ -4,6 +4,8 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
+#include "userprog/syscall.h"
 
 /** Number of page faults processed. */
 static long long page_fault_cnt;
@@ -158,7 +160,7 @@ page_fault (struct intr_frame *f)
       /** 如果页面错误是由系统调用的错误引用触发的，
        * 只需将eax设置为0xffffffff（作为返回值-1），
        * 并将其以前的值复制到eip中。 */
-      f->eip = f->eax;
+      f->eip = (void *)f->eax;
       f->eax = -1;
       return;
   }
