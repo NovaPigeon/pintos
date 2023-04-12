@@ -73,7 +73,7 @@ syscall_handler (struct intr_frame *f UNUSED)
   syscalls[syscall_type](f);
 }
 
-/*
+/**
  * System Call: pid_t exec (const char *cmd_line)
  * - 运行 cmd_line，传递参数，并返回新进程的 ID.
  * - 如果无法加载或运行，应返回无效的 pid -1.
@@ -100,7 +100,7 @@ syscall_halt(struct intr_frame *f UNUSED)
   shutdown_power_off();
 }
 
-/*
+/**
  * system call: void exit (int status)
  * 1. 终止当前进程，将 exit_state 交给内核
  * 2. 若其父进程正在 wait 当前进程，则 status 将会被返回给父进程， 
