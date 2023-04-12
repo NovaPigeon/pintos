@@ -22,8 +22,6 @@
 /* mlfqs */
 fixed_point_t load_avg;
 
-bool schedule_start=false;
-
 /** Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
@@ -112,7 +110,8 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-
+  /* mlfqs 策略对于 lab 2 而言更快一点，但策略选取并不影响结果的正确性 */
+  thread_mlfqs=true;
   /* 初始化文件系统的锁 */
   lock_init(&filesys_lock);
 
@@ -134,9 +133,6 @@ thread_start (void)
   thread_create ("idle", PRI_MIN, idle, &idle_started);
   /* 初始化 load_avg */
   load_avg=INT_TO_FP(0);
-
-  /* 初始化，标记线程调度可被应用，以免在未初始化时盲目调用 thread_yield() */
-  schedule_start=true;
 
   /* Start preemptive thread scheduling. */
   intr_enable ();
@@ -237,7 +233,6 @@ thread_create (const char *name, int priority,
   t->as_child->store_exit_state=0;
   t->as_child->is_waited=false;
   sema_init(&t->as_child->wait_sema,0);
-  //if(t->parent!=NULL)
   list_push_back(&thread_current()->childs,&t->as_child->as_child_elem);
 
   old_level=intr_disable();
@@ -267,10 +262,7 @@ thread_create (const char *name, int priority,
   /* 若有任何线程被加入 ready_list 时优先级高于当前线程的优先级，
    当前线程应当立即放弃 CPU 控制权*/
   if(thread_current()->priority < priority)
-  {
-    //printf("抢占式调度发生，%s\n",t->name);
     thread_yield();
-  }
   intr_set_level(old_level);
   return tid;
 }
@@ -411,8 +403,9 @@ thread_exit (void)
     /* 将 exit_state 存储，用于父进程在子进程消亡后访问 */
     t_cur->as_child->store_exit_state = t_cur->exit_state;
     /* 将控制权交给父进程 */
-    if (t_cur->as_child->is_waited == true)
-      sema_up(&t_cur->as_child->wait_sema);
+    //if (t_cur->as_child->is_waited == true)
+    sema_up(&t_cur->as_child->wait_sema);
+    sema_up(&t_cur->sema_exec);
   }
 
   intr_disable();
@@ -427,9 +420,6 @@ thread_exit (void)
 void
 thread_yield (void) 
 {
-  if(schedule_start==false)
-    return;
-
   struct thread *cur = thread_current ();
   enum intr_level old_level;
   

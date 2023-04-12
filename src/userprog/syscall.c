@@ -413,13 +413,14 @@ check_read_vaddr(const void *vaddr, size_t size)
   void *ptr=pagedir_get_page(thread_current()->pagedir,vaddr);
   if(!ptr)
     terminate_offend_process();
-  
-  /* 依次检查每个字节 */
-  for(size_t i=0;i<size;++i)
-  {
-    if(get_user(vaddr+i)==-1)
-      terminate_offend_process();
-  }
+  /* 若写入的字节数为 0，直接返回 */
+  if(size==0)
+    return (void *)vaddr;
+  /* 检查从 vaddr 开始的 size 个字节是否合法，只要检查首字节和尾字节就可以了 */
+  if (get_user(vaddr ) == -1)
+    terminate_offend_process();
+  if (get_user(vaddr +size-1) == -1)
+    terminate_offend_process();
   return (void *)vaddr;
   
 }
@@ -437,13 +438,16 @@ check_write_vaddr(void *vaddr, size_t size)
   void *ptr = pagedir_get_page(thread_current()->pagedir, vaddr);
   if (!ptr)
     terminate_offend_process();
-
-  /* 依次检查每个字节 */
-  for (size_t i = 0; i < size; ++i)
-  {
-    if (!put_user(vaddr + i,0))
-      terminate_offend_process();
-  }
+  
+  /* 若写入的字节数为 0，直接返回 */
+  if(size==0)
+    return (void *)vaddr;
+  /* 检查从 vaddr 开始的 size 个字节是否合法，只要检查首字节和尾字节就可以了 */
+  if (!put_user(vaddr , 0))
+    terminate_offend_process();
+  if (!put_user(vaddr +size-1, 0))
+    terminate_offend_process();
+  
   return (void *)vaddr;
 }
 
