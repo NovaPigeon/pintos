@@ -6,7 +6,8 @@
                 "${default}",
                 "${workspaceFolder}/src",
                 "${workspaceFolder}/src/lib",
-                "${workspaceFolder}/src/lib/kernel"
+                "${workspaceFolder}/src/lib/kernel",
+                "${workspaceFolder}"
             ],
             "defines": [],
             "macFrameworkPath": [
