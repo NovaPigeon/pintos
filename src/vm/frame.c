@@ -11,8 +11,6 @@
 #include "lib/kernel/list.h"
 #include "userprog/pagedir.h"
 
-/* 支持多进程操作物理页表的同步，只需要在 frame.h 中定义的全局函数的首尾处加锁即可 */
-static struct lock lock_frames;
 
 /* 哈希表 */
 static bool frame_hash_less(const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED);

@@ -176,6 +176,8 @@ vm_load_page(struct hash *spage_table, void *page_addr, uint32_t *pagedir)
         load_success=load_blank_page(spte,pagedir);
         break;
     case PAGE_FRAME:
+        lock_acquire(&lock_frames);
+        lock_release(&lock_frames);
         /* 若已经在物理内存中，则无需加载 */
         load_success=true;
         break;

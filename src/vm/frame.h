@@ -4,6 +4,7 @@
 #include "lib/kernel/hash.h"
 #include "threads/thread.h"
 #include "threads/palloc.h"
+#include "threads/synch.h"
 
 struct frame_info
 {
@@ -31,6 +32,9 @@ struct list clock_list;
 
 /* 时钟指针 */
 struct list_elem *clock_hand;
+
+/* 支持多进程操作物理页表的同步，只需要在 frame.h 中定义的全局函数的首尾处加锁即可 */
+struct lock lock_frames;
 
 /* 初始化物理页系统 */
 void vm_frame_init(void);

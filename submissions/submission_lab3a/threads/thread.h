@@ -136,6 +136,7 @@ struct thread
    struct file *exec_prog;          /**< 记录当前进程正在运行的文件，该文件无法被修改. */  
 
    struct hash *spage_table;   /**< 补充页表，以哈希表的形式存在. */
+   void *stack_esp;              /**< 保存栈指针，用于栈增长时判断范围(因为当在 syscall 时发生错误，无法直接访问 f->esp)，. */
    
 };
 

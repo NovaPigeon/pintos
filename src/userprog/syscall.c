@@ -82,6 +82,7 @@ static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
   int syscall_type=*(int *)check_read_vaddr(f->esp,sizeof(int));
+  thread_current()->stack_esp=f->esp;
   /* 若系统调用号非法，立即终止之 */
   if(syscall_type<0 || syscall_type>=SYSCALL_NUM)
     terminate_offend_process();
