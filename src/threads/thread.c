@@ -352,6 +352,9 @@ thread_exit (void)
   struct thread *t_cur = thread_current();
 
 #ifdef VM
+  /* 释放被映射的文件的相关资源 */
+  vm_destroy_mmfiles_table(t_cur->mmap_files);
+  t_cur->mmap_files = NULL;
   /* 释放扩充页表的资源 */
   vm_destroy_spage_table(t_cur->spage_table);
   t_cur->spage_table=NULL;

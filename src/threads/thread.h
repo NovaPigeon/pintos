@@ -9,6 +9,7 @@
 #include "devices/timer.h"
 #include "fixed-point.h"
 #include "synch.h"
+#include "vm/mmap.h"
 
 /** States in a thread's life cycle. */
 enum thread_status
@@ -22,6 +23,7 @@ enum thread_status
 /** Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
+
 #define TID_ERROR ((tid_t)-1) /**< Error value for tid_t. */
 
 /** Thread priorities. */
@@ -137,6 +139,8 @@ struct thread
 
    struct hash *spage_table;   /**< 补充页表，以哈希表的形式存在. */
    void *stack_esp;              /**< 保存栈指针，用于栈增长时判断范围(因为当在 syscall 时发生错误，无法直接访问 f->esp)，. */
+   struct hash *mmap_files;   /**< 存储所有被 mmap 的文件信息，以 mapid 为索引. */
+   mapid_t max_alloc_mapid;   /**< 从零开始计数，记录当前已经分配的最大的 mapid，用于分配下一个 mapid */
    
 };
 
@@ -171,8 +175,8 @@ struct thread_file
    /* 文件指针 */
    struct file* file;
    struct list_elem file_elem;
-
 };
+
 
 /** If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.

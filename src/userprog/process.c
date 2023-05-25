@@ -21,6 +21,7 @@
 #include "vm/page.h"
 #include "vm/frame.h"
 #include "vm/swap.h"
+#include "vm/mmap.h"
 
 /* 规定可以传入的参数的最大数量 */
 #define MAX_ARG_NUM 128
@@ -30,6 +31,7 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+
 
 /** Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -422,6 +424,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   /* 为每个进程创建扩充页表 */
   t->spage_table=vm_create_spage_table();
+  /* 为每个进程创建 mmapfile 的哈希表，并将最大的 mapid 置为 0 */
+  t->mmap_files=vm_create_mmfiles_table();
+  t->max_alloc_mapid=0;
 
   process_activate ();
 

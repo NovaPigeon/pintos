@@ -82,6 +82,7 @@ static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
   int syscall_type=*(int *)check_read_vaddr(f->esp,sizeof(int));
+  /* 每次系统调用，更新栈指针 */
   thread_current()->stack_esp=f->esp;
   /* 若系统调用号非法，立即终止之 */
   if(syscall_type<0 || syscall_type>=SYSCALL_NUM)
@@ -251,13 +252,13 @@ syscall_filesize(struct intr_frame *f)
 static void
 syscall_read(struct intr_frame *f)
 {
+
   void *user_ptr = f->esp;
   struct thread *t_cur=thread_current();
   int fd = *(int *)check_read_vaddr(user_ptr + PTR_SIZE, sizeof(int));
   uint8_t *buffer = *(uint8_t **)check_read_vaddr(user_ptr + 2 * PTR_SIZE, PTR_SIZE);
   unsigned size = *(int *)check_read_vaddr(user_ptr + 3 * PTR_SIZE, sizeof(unsigned));
   check_write_vaddr(buffer,size);
-  
   if(fd==STDOUT_FILENO)
     terminate_offend_process();
   if(fd==STDIN_FILENO)
@@ -331,8 +332,6 @@ syscall_write(struct intr_frame *f)
       lock_acquire(&filesys_lock);
       /* 加载相应的页，并设置其 pinned 值，使之不会被驱逐 */
       void *page_addr = pg_round_down(buffer);
-      struct supplemental_pte *spte = vm_find_spte(t_cur->spage_table, page_addr);
-      ASSERT(spte->writable == true);
       for (;page_addr < (void *)(buffer + size); page_addr += PGSIZE)
       {
         vm_load_page(t_cur->spage_table, page_addr, t_cur->pagedir);
@@ -411,16 +410,152 @@ syscall_close(struct intr_frame *f)
   }
 }
 
-static void 
+/** System Call: mapid_t mmap (int fd, void *addr)
+ * 1. Maps the file open as fd into the process's virtual address space. 
+ * The entire file is mapped into consecutive virtual pages starting at addr.
+ * 
+ * 2. Your VM system must lazily load pages in mmap regions and use the mmaped file itself 
+ * as backing store for the mapping. That is, evicting a page mapped by mmap writes it 
+ * back to the file it was mapped from.
+ * 
+ * 3. If the file's length is not a multiple of PGSIZE, 
+ * then some bytes in the final mapped page "stick out" beyond the end of the file. 
+ * Set these bytes to zero when the page is faulted in from the file system, 
+ * and discard them when the page is written back to disk.
+ * 
+ * 4. If successful, this function returns a "mapping ID" that uniquely identifies 
+ * the mapping within the process. On failure, it must return -1, 
+ * which otherwise should not be a valid mapping id, and the process's mappings must be unchanged.
+ * 
+ * 5. A call to mmap may fail if the file open as fd has a length of zero bytes.
+ * 
+ * 6. It must fail if addr is not page-aligned or if the range of pages mapped 
+ * overlaps any existing set of mapped pages, including the stack or pages mapped at executable load time.
+ * 
+ * 7. It must also fail if addr is 0, because some Pintos code assumes virtual page 0 is not mapped.
+ * 
+ * 8. Finally, file descriptors 0 and 1, representing console input and output, are not mappable.
+`*/
+static void
 syscall_mmap(struct intr_frame *f)
 {
-  f->eax=1;
+  int fd = *(int *)check_read_vaddr(f->esp + PTR_SIZE, PTR_SIZE);
+  void *addr = *(void **)check_read_vaddr(f->esp + 2 * PTR_SIZE, PTR_SIZE);
+  /* 当 fd 为 STDIN_FILENO/STDOUT_FILENO，或者给出的地址不是页对齐的时，直接返回失败 */
+  if(addr==NULL || 
+     !is_user_vaddr(addr) || 
+     pg_ofs(addr)!=0 ||
+     fd==0 || fd==1)
+  {
+    f->eax=MMERROR;
+    return;
+  }
+  lock_acquire(&filesys_lock);
+  /* 若 fd 对应的文件存在，则重新打开它，得到一个副本，否则，直接返回失败 */
+  struct thread_file *file_info=find_file(fd);
+  struct file *file;
+  struct thread *t_cur=thread_current();
+  off_t file_size;
+  off_t offset;
+  size_t read_bytes;
+  size_t zero_bytes;
+  if(file_info==NULL || file_info->file==NULL)
+  {
+    f->eax=MMERROR;
+    lock_release(&filesys_lock);
+    return;
+  }
+  
+  file=file_reopen(file_info->file);
+  if(file==NULL )
+  {
+    f->eax = MMERROR;
+    lock_release(&filesys_lock);
+    return;
+  }
+  /* 若打开的文件为空，直接返回失败*/
+  file_size=file_length(file);
+  if(file_size<=0)
+  {
+    f->eax = MMERROR;
+    lock_release(&filesys_lock);
+    return;
+  }
+  /* 检查要映射的所有页中是否有一些页已经被分配内容，若有，直接返回失败 */
+  for(offset=0;offset<file_size;offset+=PGSIZE)
+  {
+    if(vm_find_spte(t_cur->spage_table,addr+offset)!=NULL ||
+      pagedir_get_page(t_cur->pagedir,addr+offset)!=NULL)
+    {
+      f->eax = MMERROR;
+      lock_release(&filesys_lock);
+      return;
+    }
+  }
+  /* 将文件内容映射到内存中(lazy load) */
+  for(offset=0;offset<file_size;offset+=PGSIZE)
+  {
+    if(offset+PGSIZE>=file_size)
+      read_bytes=file_size-offset;
+    else
+      read_bytes=PGSIZE;
+    zero_bytes=PGSIZE-read_bytes;
+    vm_insert_file_spte(t_cur->spage_table,
+                        addr+offset,
+                        file,
+                        offset,
+                        read_bytes,
+                        zero_bytes,
+                        true);
+  }
+  mapid_t mapid=vm_mmfile_insert(t_cur,file,addr,file_size);
+  if(mapid==MMERROR)
+  {
+    f->eax = MMERROR;
+    lock_release(&filesys_lock);
+    return;
+  }
+  f->eax=mapid;
+  lock_release(&filesys_lock);
 }
-static void 
+
+/** System Call: void munmap (mapid_t mapping)
+ * 1. Unmaps the mapping designated by mapping, which must be a mapping ID returned 
+ * by a previous call to mmap by the same process that has not yet been unmapped.
+ * 
+ * 2. All mappings are implicitly unmapped when a process exits, 
+ * whether via exit or by any other means.
+ * 
+ * 3. When a mapping is unmapped, whether implicitly or explicitly, 
+ * all pages written to by the process are written back to the file, 
+ * and pages not written must not be. 
+ * The pages are then removed from the process's list of virtual pages.
+ * 
+ * 4. Closing or removing a file does not unmap any of its mappings. 
+ * Once created, a mapping is valid until munmap is called or the process exits, 
+ * following the Unix convention. See Removing an Open File, for more information. 
+ * You should use the file_reopen function to obtain a separate and independent 
+ * reference to the file for each of its mappings.
+ * 
+ * 5. If two or more processes map the same file, 
+ * there is no requirement that they see consistent data. 
+ * Unix handles this by making the two mappings share the same physical page, 
+ * but the mmap system call also has an argument allowing the client 
+ * to specify whether the page is shared or private (i.e. copy-on-write).
+*/
+static void
 syscall_munmap(struct intr_frame *f)
 {
-
+  mapid_t mapping = *(int *)check_read_vaddr(f->esp + PTR_SIZE, PTR_SIZE);
+  vm_mmfile_unmap(thread_current(),mapping);
 }
+
+
+
+
+
+
+/********************************************************************************/
 
 /**
  * 在用户虚拟地址 UADDR 读取一个字节。
@@ -472,6 +607,7 @@ check_read_vaddr(const void *vaddr, size_t size)
   /* 若 ptr 不在用户虚拟空间内，直接终止 */
   if(!is_user_vaddr(vaddr))
     terminate_offend_process();
+  /* 判断要读取的地址是否在虚拟页内 */
   void *ptr=pagedir_get_page(thread_current()->pagedir,vaddr);
   if(!ptr)
     terminate_offend_process();
@@ -497,10 +633,14 @@ check_write_vaddr(void *vaddr, size_t size)
   /* 若 ptr 不在用户虚拟空间内，直接终止 */
   if (!is_user_vaddr(vaddr))
     terminate_offend_process();
+
+  /* 因为可能出现栈增长的情况，所以有可能该虚拟页还未被映射，以下检查没有必要
+  (若不去除，会导致样例 vm/pt-grow-stk-sc fail)
   void *ptr = pagedir_get_page(thread_current()->pagedir, vaddr);
   if (!ptr)
     terminate_offend_process();
-  
+  */
+
   /* 若写入的字节数为 0，直接返回 */
   if(size==0)
     return (void *)vaddr;

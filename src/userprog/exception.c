@@ -134,6 +134,9 @@ page_fault(struct intr_frame *f)
    bool write;       /**< True: access was write, false: access was read. */
    bool user;        /**< True: access by user, false: access by kernel. */
    void *fault_addr; /**< Fault address. */
+   void *esp;
+   bool load_success=false;
+
    struct thread *t_cur=thread_current();
    struct supplemental_pte *spte;
 
@@ -159,44 +162,47 @@ page_fault(struct intr_frame *f)
    write = (f->error_code & PF_W) != 0;
    user = (f->error_code & PF_U) != 0;
    
-   if(fault_addr==NULL || !not_present || !is_user_vaddr(fault_addr))
-      goto done;
-   
-   spte=vm_find_spte(t_cur->spage_table,pg_round_down(fault_addr));
+   if(user)
+      esp=f->esp;
+   else
+      esp=t_cur->stack_esp;
 
-   /* 扩展进程栈 */
-   if(spte==NULL && fault_addr >=(f->esp-32)&&(PHYS_BASE-pg_round_down(fault_addr)<=STACK_SIZE))
-      if(vm_find_spte(t_cur->spage_table,pg_round_down(fault_addr))==NULL)
-         vm_instert_blank_spte(t_cur->spage_table,pg_round_down(fault_addr));
-   
-   if(!vm_load_page(t_cur->spage_table,pg_round_down(fault_addr),t_cur->pagedir))
-      goto done;
 
-   return;
-   done:
-
-   /** 如果 kernel 是正确的，那在内核上下文中发生 page fault 的唯一可能是在处理
-    * system call 中用户提供的指针时发生了错误，也就是说 user=false 当且仅当
-    * system_call 中传递的指针出错了  */
-   if (!user)
+   if(not_present && fault_addr!=NULL && is_user_vaddr(fault_addr))
    {
-       /** 如果页面错误是由系统调用的错误引用触发的，
-        * 只需将eax设置为0xffffffff（作为返回值-1），
-        * 并将其以前的值复制到eip中。 */
-      f->eip = (void *)f->eax;
-      f->eax = -1;
-      return;
+      spte=vm_find_spte(t_cur->spage_table,pg_round_down(fault_addr));
+      /* 扩展进程栈 */
+      if(spte==NULL && 
+         (fault_addr >=esp || fault_addr==f->esp-32 || fault_addr==f->esp-4 )&&
+         (PHYS_BASE-pg_round_down(fault_addr)<=STACK_SIZE))
+         if(vm_find_spte(t_cur->spage_table,pg_round_down(fault_addr))==NULL)
+            vm_instert_blank_spte(t_cur->spage_table,pg_round_down(fault_addr));
+      load_success=vm_load_page(t_cur->spage_table,pg_round_down(fault_addr),t_cur->pagedir);
    }
 
+   if(!load_success)
+   {
+      /** 如果 kernel 是正确的，那在内核上下文中发生 page fault 的唯一可能是在处理
+      * system call 中用户提供的指针时发生了错误，也就是说 user=false 当且仅当
+      * system_call 中传递的指针出错了  */
+      if (!user)
+      {
+         /** 如果页面错误是由系统调用的错误引用触发的，
+         * 只需将eax设置为0xffffffff（作为返回值-1），
+         * 并将其以前的值复制到eip中。 */
+         f->eip = (void *)f->eax;
+         f->eax = -1;
+         return;
+      }
 
-
-   /* To implement virtual memory, delete the rest of the function
+      /* To implement virtual memory, delete the rest of the function
       body, and replace it with code that brings in the page to
       which fault_addr refers. */
-   printf ("Page fault at %p: %s error %s page in %s context.\n",
-           fault_addr,
-           not_present ? "not present" : "rights violation",
-           write ? "writing" : "reading",
-           user ? "user" : "kernel");
-   kill (f);
+      printf ("Page fault at %p: %s error %s page in %s context.\n",
+            fault_addr,
+            not_present ? "not present" : "rights violation",
+            write ? "writing" : "reading",
+            user ? "user" : "kernel");
+      kill (f);
+   }
 }
